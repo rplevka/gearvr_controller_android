@@ -17,7 +17,7 @@ import java.nio.ByteOrder
  */
 object GearVrPacketParser {
 
-    private const val PACKET_SIZE = 60
+    const val PACKET_SIZE = 60
     private const val IMU_BLOCK_SIZE = 16
     private const val IMU_BLOCK_COUNT = 3
 

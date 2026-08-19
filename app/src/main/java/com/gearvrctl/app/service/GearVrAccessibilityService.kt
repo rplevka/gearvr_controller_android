@@ -10,6 +10,7 @@ import com.gearvrctl.app.config.GyroMode
 import com.gearvrctl.app.config.ScrollTrigger
 import com.gearvrctl.app.config.SettingsRepository
 import com.gearvrctl.app.config.toGearVrButtonOrNull
+import com.gearvrctl.app.input.DeltaSmoother
 import com.gearvrctl.app.input.GyroPointerMotionSource
 import com.gearvrctl.app.input.PointerModeManager
 import com.gearvrctl.app.input.TouchpadPointerMotionSource
@@ -19,9 +20,12 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 private const val TAG = "GearVrAccessibility"
+private const val TICK_INTERVAL_MS = 16L
 
 /**
  * Touchpad-drag (or gyro tilt, see [GyroMode]) moves an overlay cursor, touchpad-click taps at
@@ -29,6 +33,11 @@ private const val TAG = "GearVrAccessibility"
  * touchpad scrolls real content instead of just moving the cursor, and the other physical
  * buttons fire the user-configured action via [ButtonActionMapper]. Everything tunable is
  * live-loaded from [SettingsRepository] and applied without restarting the service.
+ *
+ * Confirmed on real hardware that the controller delivers touchpad/gyro data in ~12Hz bursts (a
+ * firmware/BLE-scheduling limit, not fixable here) — [cursorSmoother]/[scrollSmoother] spread
+ * each burst's delta across a steady ~60fps [tickLoop] instead of applying it all at once, which
+ * otherwise looks like a jump followed by a freeze.
  */
 class GearVrAccessibilityService : AccessibilityService() {
 
@@ -42,6 +51,8 @@ class GearVrAccessibilityService : AccessibilityService() {
     private val buttonActionMapper by lazy {
         ButtonActionMapper(this, onTapRequested = { GestureDispatcher.tap(this, cursorX, cursorY) })
     }
+    private val cursorSmoother = DeltaSmoother()
+    private val scrollSmoother = DeltaSmoother()
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
     private var currentSettings = AppSettings(
@@ -53,6 +64,7 @@ class GearVrAccessibilityService : AccessibilityService() {
         scrollTrigger = SettingsRepository.DEFAULT_SCROLL_TRIGGER,
         gyroMode = SettingsRepository.DEFAULT_GYRO_MODE,
         activePointerSource = SettingsRepository.DEFAULT_ACTIVE_POINTER_SOURCE,
+        motionSmoothingEnabled = SettingsRepository.DEFAULT_MOTION_SMOOTHING_ENABLED,
     )
 
     private var cursorX = 0f
@@ -94,9 +106,20 @@ class GearVrAccessibilityService : AccessibilityService() {
         serviceScope.launch {
             repository.rawPackets.collect { bytes -> onPacket(bytes) }
         }
+
+        serviceScope.launch {
+            while (isActive) {
+                delay(TICK_INTERVAL_MS)
+                tick()
+            }
+        }
     }
 
     private fun onPacket(bytes: ByteArray) {
+        // The controller occasionally sends non-sensor-report notifications on this same
+        // characteristic (confirmed on real hardware: a 2-byte packet while testing VR mode) —
+        // skip anything that isn't a full 60-byte report rather than crashing the whole service.
+        if (bytes.size != GearVrPacketParser.PACKET_SIZE) return
         val sample = GearVrPacketParser.parse(bytes)
 
         // Feed both sources every sample regardless of which drives the cursor right now, so
@@ -107,15 +130,21 @@ class GearVrAccessibilityService : AccessibilityService() {
 
         val scrollTriggerHeld = isHeld(sample.buttons, currentSettings.scrollTrigger)
 
+        val smoothingEnabled = currentSettings.motionSmoothingEnabled
+
         if (scrollTriggerHeld && sample.touching) {
             if (!scrolling) {
                 scrolling = true
+                cursorSmoother.reset()
                 scrollController.start(cursorX, cursorY)
             }
-            touchpadDelta?.let { scrollController.extend(it.dx, it.dy) }
+            touchpadDelta?.let {
+                if (smoothingEnabled) scrollSmoother.addDelta(it.dx, it.dy) else scrollController.extend(it.dx, it.dy)
+            }
         } else {
             if (scrolling) {
                 scrolling = false
+                scrollSmoother.reset()
                 scrollController.end()
             }
             val delta = PointerModeManager.select(
@@ -126,9 +155,11 @@ class GearVrAccessibilityService : AccessibilityService() {
                 activeSource = currentSettings.activePointerSource,
             )
             delta?.let {
-                cursorX = (cursorX + it.dx).coerceIn(0f, screenWidth.toFloat())
-                cursorY = (cursorY + it.dy).coerceIn(0f, screenHeight.toFloat())
-                overlay.moveTo(cursorX, cursorY)
+                if (smoothingEnabled) {
+                    cursorSmoother.addDelta(it.dx, it.dy)
+                } else {
+                    moveCursor(it.dx, it.dy)
+                }
             }
         }
 
@@ -139,6 +170,20 @@ class GearVrAccessibilityService : AccessibilityService() {
         touchpadClickHeld = clicked
 
         buttonActionMapper.onButtons(sample.buttons, excluded = currentSettings.scrollTrigger.toGearVrButtonOrNull())
+    }
+
+    /** Drains the smoothers at a steady rate, independent of the BLE data's bursty arrival. */
+    private fun tick() {
+        cursorSmoother.tick()?.let { moveCursor(it.dx, it.dy) }
+        if (scrolling) {
+            scrollSmoother.tick()?.let { scrollController.extend(it.dx, it.dy) }
+        }
+    }
+
+    private fun moveCursor(dx: Float, dy: Float) {
+        cursorX = (cursorX + dx).coerceIn(0f, screenWidth.toFloat())
+        cursorY = (cursorY + dy).coerceIn(0f, screenHeight.toFloat())
+        overlay.moveTo(cursorX, cursorY)
     }
 
     private fun isHeld(buttons: ButtonState, trigger: ScrollTrigger): Boolean = when (trigger) {

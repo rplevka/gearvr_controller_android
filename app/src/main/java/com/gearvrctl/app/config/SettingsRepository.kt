@@ -1,6 +1,7 @@
 package com.gearvrctl.app.config
 
 import android.content.Context
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
@@ -19,6 +20,7 @@ data class AppSettings(
     val scrollTrigger: ScrollTrigger,
     val gyroMode: GyroMode,
     val activePointerSource: ActivePointerSource,
+    val motionSmoothingEnabled: Boolean,
 )
 
 /** Live-persisted app settings via Jetpack DataStore — replaces the Phase 4/5 hardcoded values. */
@@ -31,6 +33,7 @@ class SettingsRepository(private val context: Context) {
     private val scrollTriggerKey = stringPreferencesKey("scroll_trigger")
     private val gyroModeKey = stringPreferencesKey("gyro_mode")
     private val activePointerSourceKey = stringPreferencesKey("active_pointer_source")
+    private val motionSmoothingEnabledKey = booleanPreferencesKey("motion_smoothing_enabled")
     private fun buttonKey(button: GearVrButton) = stringPreferencesKey("button_${button.name}")
 
     val settings: Flow<AppSettings> = context.dataStore.data.map { prefs ->
@@ -51,6 +54,7 @@ class SettingsRepository(private val context: Context) {
             activePointerSource = prefs[activePointerSourceKey]
                 ?.let { runCatching { ActivePointerSource.valueOf(it) }.getOrNull() }
                 ?: DEFAULT_ACTIVE_POINTER_SOURCE,
+            motionSmoothingEnabled = prefs[motionSmoothingEnabledKey] ?: DEFAULT_MOTION_SMOOTHING_ENABLED,
         )
     }
 
@@ -86,6 +90,10 @@ class SettingsRepository(private val context: Context) {
         context.dataStore.edit { it[activePointerSourceKey] = source.name }
     }
 
+    suspend fun setMotionSmoothingEnabled(enabled: Boolean) {
+        context.dataStore.edit { it[motionSmoothingEnabledKey] = enabled }
+    }
+
     companion object {
         const val DEFAULT_SENSITIVITY = 6.0f
         const val DEFAULT_ACCELERATION = 0.0f
@@ -94,6 +102,7 @@ class SettingsRepository(private val context: Context) {
         val DEFAULT_SCROLL_TRIGGER = ScrollTrigger.TRIGGER
         val DEFAULT_GYRO_MODE = GyroMode.FALLBACK
         val DEFAULT_ACTIVE_POINTER_SOURCE = ActivePointerSource.TOUCHPAD
+        const val DEFAULT_MOTION_SMOOTHING_ENABLED = true
 
         // TRIGGER defaults to NONE here — it's the default scroll-trigger modifier (see
         // DEFAULT_SCROLL_TRIGGER), so holding it to scroll shouldn't also fire Recents.

@@ -22,6 +22,9 @@ class ControllerGattCallback(
         when (newState) {
             BluetoothProfile.STATE_CONNECTED -> {
                 Log.i(TAG, "Connected, discovering services")
+                // onConnected() triggers ControllerRepository's periodic re-assertion of
+                // CONNECTION_PRIORITY_HIGH — a one-time request here isn't enough, Android drops
+                // back to a slow interval within ~1-2s regardless (confirmed on real hardware).
                 onConnected()
                 gatt.discoverServices()
             }

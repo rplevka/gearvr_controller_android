@@ -13,6 +13,7 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -21,6 +22,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.gearvrctl.app.config.ActivePointerSource
@@ -50,6 +52,7 @@ fun SettingsScreen(settingsRepository: SettingsRepository) {
             scrollTrigger = SettingsRepository.DEFAULT_SCROLL_TRIGGER,
             gyroMode = SettingsRepository.DEFAULT_GYRO_MODE,
             activePointerSource = SettingsRepository.DEFAULT_ACTIVE_POINTER_SOURCE,
+            motionSmoothingEnabled = SettingsRepository.DEFAULT_MOTION_SMOOTHING_ENABLED,
         ),
     )
 
@@ -61,6 +64,14 @@ fun SettingsScreen(settingsRepository: SettingsRepository) {
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
         Text("Touchpad Pointer", style = MaterialTheme.typography.titleLarge)
+
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Switch(
+                checked = settings.motionSmoothingEnabled,
+                onCheckedChange = { scope.launch { settingsRepository.setMotionSmoothingEnabled(it) } },
+            )
+            Text("Smooth motion between BLE bursts (may add slight lag; try both)")
+        }
 
         Text("Sensitivity: %.1f".format(settings.touchpadSensitivity))
         Slider(

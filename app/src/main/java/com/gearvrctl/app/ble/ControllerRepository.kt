@@ -6,6 +6,10 @@ import android.bluetooth.BluetoothGatt
 import android.bluetooth.BluetoothGattCharacteristic
 import android.bluetooth.BluetoothManager
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
+import android.util.Log
 import com.gearvrctl.app.protocol.RawPacketLogger
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -51,8 +55,41 @@ class ControllerRepository(private val appContext: Context) {
     var debugCaptureEnabled = false
     private val captureBuffer = StringBuilder()
     private var captureCount = 0
+    private var lastPacketArrivalMs = 0L
+    private val timingGaps = ArrayList<Long>()
 
     private var gatt: BluetoothGatt? = null
+
+    // Confirmed on real hardware: Android silently drops the connection back to a slow ~90ms
+    // interval within ~1-2s of connecting, overriding a one-time requestConnectionPriority(HIGH)
+    // call — a known flaky Android/OEM Bluetooth-stack behavior, not a peripheral limit (the
+    // interval WAS fast right after connecting). Re-asserting periodically counteracts it.
+    private val priorityHandler = Handler(Looper.getMainLooper())
+    private val reassertPriorityRunnable = object : Runnable {
+        @SuppressLint("MissingPermission")
+        override fun run() {
+            gatt?.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
+            priorityHandler.postDelayed(this, PRIORITY_REASSERT_INTERVAL_MS)
+        }
+    }
+
+    // The controller cleanly disconnects (status=0, not an error) after roughly 10-15s of
+    // streaming — confirmed on real hardware, and not something our own code triggers (we never
+    // call disconnect() ourselves in that flow). Sending the documented KEEP_ALIVE command
+    // periodically to see if that's what's expected to keep the streaming session alive.
+    private val keepAliveHandler = Handler(Looper.getMainLooper())
+    private val keepAliveRunnable = object : Runnable {
+        @SuppressLint("MissingPermission")
+        override fun run() {
+            val g = gatt
+            val characteristic = g?.getService(GattUuids.SERVICE)?.getCharacteristic(GattUuids.WRITE_CHARACTERISTIC)
+            if (g != null && characteristic != null) {
+                writeCharacteristic(g, characteristic, GattUuids.KEEP_ALIVE)
+            }
+            keepAliveHandler.postDelayed(this, KEEP_ALIVE_INTERVAL_MS)
+        }
+    }
+
     private val bluetoothManager by lazy {
         appContext.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
     }
@@ -84,13 +121,37 @@ class ControllerRepository(private val appContext: Context) {
     private fun connectToDevice(device: BluetoothDevice) {
         _connectionState.value = ConnectionState.Connecting
         val callback = ControllerGattCallback(
-            onConnected = { _connectionState.value = ConnectionState.Connected },
-            onDisconnected = { status -> _connectionState.value = ConnectionState.Disconnected("status=$status") },
+            onConnected = {
+                _connectionState.value = ConnectionState.Connected
+                priorityHandler.removeCallbacks(reassertPriorityRunnable)
+                priorityHandler.post(reassertPriorityRunnable)
+                keepAliveHandler.removeCallbacks(keepAliveRunnable)
+                keepAliveHandler.postDelayed(keepAliveRunnable, KEEP_ALIVE_INTERVAL_MS)
+            },
+            onDisconnected = { status ->
+                priorityHandler.removeCallbacks(reassertPriorityRunnable)
+                keepAliveHandler.removeCallbacks(keepAliveRunnable)
+                _connectionState.value = ConnectionState.Disconnected("status=$status")
+            },
             onNotificationsReady = { enableSensorStreaming() },
             onRawPacket = { bytes ->
                 if (debugCaptureEnabled) {
                     captureCount += 1
                     captureBuffer.append(RawPacketLogger.summaryLine(captureCount, bytes)).append('\n')
+
+                    // Accumulate in memory and flush in one batched Log.d call every
+                    // TIMING_FLUSH_SIZE samples — logging every single packet (~65Hz) has real
+                    // Binder/logd overhead of its own and risks measuring the probe, not the BLE
+                    // arrival pattern it's trying to observe.
+                    val now = SystemClock.elapsedRealtime()
+                    if (lastPacketArrivalMs != 0L) {
+                        timingGaps.add(now - lastPacketArrivalMs)
+                        if (timingGaps.size >= TIMING_FLUSH_SIZE) {
+                            Log.d("GearVrTiming", timingGaps.joinToString(","))
+                            timingGaps.clear()
+                        }
+                    }
+                    lastPacketArrivalMs = now
                 }
                 _rawPackets.tryEmit(bytes)
             },
@@ -110,7 +171,20 @@ class ControllerRepository(private val appContext: Context) {
         val g = gatt ?: return
         val characteristic = g.getService(GattUuids.SERVICE)
             ?.getCharacteristic(GattUuids.WRITE_CHARACTERISTIC) ?: return
-        writeCharacteristic(g, characteristic, GattUuids.ENABLE_SENSOR_MODE)
+
+        // Matches the init sequence of a known-working reference implementation
+        // (mijuu/GearVR-Controller-Bridge): disable Low Power Mode first, wait, then enable
+        // sensor mode, wait. We'd never sent LPM_DISABLE before — likely explains both the
+        // ~12Hz bursty data and the clean (status=0) disconnect after ~10-15s seen on real
+        // hardware, both textbook power-saving behavior.
+        //
+        // Tried ENABLE_VR_MODE for a steadier/higher rate — confirmed via real crash log that it
+        // emits at least one non-60-byte packet (a 2-byte one seen so far), a format we haven't
+        // reverse-engineered. Staying on sensor mode, whose 60-byte layout is fully verified.
+        writeCharacteristic(g, characteristic, GattUuids.LPM_DISABLE)
+        Handler(Looper.getMainLooper()).postDelayed({
+            writeCharacteristic(g, characteristic, GattUuids.ENABLE_SENSOR_MODE)
+        }, INIT_STEP_DELAY_MS)
     }
 
     @SuppressLint("MissingPermission")
@@ -127,10 +201,23 @@ class ControllerRepository(private val appContext: Context) {
 
     @SuppressLint("MissingPermission")
     fun disconnect() {
+        priorityHandler.removeCallbacks(reassertPriorityRunnable)
+        keepAliveHandler.removeCallbacks(keepAliveRunnable)
         scanner.stop()
         gatt?.disconnect()
         gatt?.close()
         gatt = null
         _connectionState.value = ConnectionState.Idle
+    }
+
+    companion object {
+        private const val TIMING_FLUSH_SIZE = 50
+        // Confirmed on real hardware: Android grants CONNECTION_PRIORITY_HIGH only as a short
+        // boost (~500-800ms) then silently reverts to the slow interval, in lockstep with a 1s
+        // reassert loop (interval oscillated 12<->72 units, tracking each request). Reasserting
+        // faster than that revert window keeps it pinned in the fast state almost continuously.
+        private const val PRIORITY_REASSERT_INTERVAL_MS = 300L
+        private const val KEEP_ALIVE_INTERVAL_MS = 5000L
+        private const val INIT_STEP_DELAY_MS = 100L
     }
 }
