@@ -38,7 +38,7 @@ class GearVrAccessibilityService : AccessibilityService() {
     private val overlay by lazy { CursorOverlayController(this) }
     private val touchpadSource = TouchpadPointerMotionSource()
     private val gyroSource = GyroPointerMotionSource()
-    private val scrollController by lazy { ScrollGestureController(this) }
+    private val scrollController by lazy { ScrollGestureController(this, screenWidth, screenHeight) }
     private val buttonActionMapper by lazy {
         ButtonActionMapper(this, onTapRequested = { GestureDispatcher.tap(this, cursorX, cursorY) })
     }

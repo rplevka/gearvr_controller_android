@@ -9,11 +9,22 @@ import android.graphics.Path
  * of just moving the (invisible) overlay cursor. Built on `StrokeDescription.continueStroke`
  * (API 26+) — each call extends the same in-progress touch pointer rather than starting a new one.
  *
- * Touchpad samples arrive at ~65Hz; dispatching a gesture continuation on every single one is
- * likely too chatty, so deltas are batched and flushed every [FLUSH_EVERY_N_SAMPLES] samples.
- * Both that and [SEGMENT_DURATION_MS] are first-guess constants — expect on-device tuning.
+ * Touchpad samples arrive at ~65Hz. `dispatchGesture` is async and rejects a new call while one
+ * is still in flight — firing on a fixed sample-count schedule regardless of completion means
+ * most continuations get silently dropped. Flushing is driven by the dispatch's own completion
+ * callback instead: accumulate deltas while a dispatch is in flight, and send the next one the
+ * instant the previous completes, so it tracks as fast as the system can actually keep up.
+ *
+ * [lastX]/[lastY] must stay within [0, screenWidth/Height] — `Path`/`StrokeDescription` throw
+ * `IllegalArgumentException: Path bounds must not be negative` if a coordinate goes negative
+ * (confirmed via a real device crash log), which a long enough scroll drag past the screen edge
+ * will do if left unclamped, unlike the overlay cursor position which already clamps.
  */
-class ScrollGestureController(private val service: AccessibilityService) {
+class ScrollGestureController(
+    private val service: AccessibilityService,
+    private val screenWidth: Int,
+    private val screenHeight: Int,
+) {
 
     private var active = false
     private var currentStroke: GestureDescription.StrokeDescription? = null
@@ -21,17 +32,29 @@ class ScrollGestureController(private val service: AccessibilityService) {
     private var lastY = 0f
     private var pendingDx = 0f
     private var pendingDy = 0f
-    private var sampleCounter = 0
+    private var dispatching = false
+
+    private val resultCallback = object : AccessibilityService.GestureResultCallback() {
+        override fun onCompleted(gestureDescription: GestureDescription?) {
+            dispatching = false
+            flushPending()
+        }
+
+        override fun onCancelled(gestureDescription: GestureDescription?) {
+            dispatching = false
+            flushPending()
+        }
+    }
 
     fun start(x: Float, y: Float) {
         active = true
-        lastX = x
-        lastY = y
+        lastX = clampX(x)
+        lastY = clampY(y)
         pendingDx = 0f
         pendingDy = 0f
-        sampleCounter = 0
+        dispatching = false
 
-        val path = Path().apply { moveTo(x, y) }
+        val path = Path().apply { moveTo(lastX, lastY) }
         val stroke = GestureDescription.StrokeDescription(path, 0, SEGMENT_DURATION_MS, true)
         currentStroke = stroke
         dispatch(stroke)
@@ -41,13 +64,16 @@ class ScrollGestureController(private val service: AccessibilityService) {
         if (!active) return
         pendingDx += dx
         pendingDy += dy
-        sampleCounter++
-        if (sampleCounter < FLUSH_EVERY_N_SAMPLES) return
-        sampleCounter = 0
+        flushPending()
+    }
 
+    private fun flushPending() {
+        if (!active || dispatching) return
+        if (pendingDx == 0f && pendingDy == 0f) return
         val stroke = currentStroke ?: return
-        val newX = lastX + pendingDx
-        val newY = lastY + pendingDy
+
+        val newX = clampX(lastX + pendingDx)
+        val newY = clampY(lastY + pendingDy)
         val path = Path().apply {
             moveTo(lastX, lastY)
             lineTo(newX, newY)
@@ -71,12 +97,20 @@ class ScrollGestureController(private val service: AccessibilityService) {
         currentStroke = null
     }
 
+    private fun clampX(x: Float) = x.coerceIn(0f, screenWidth.toFloat())
+    private fun clampY(y: Float) = y.coerceIn(0f, screenHeight.toFloat())
+
     private fun dispatch(stroke: GestureDescription.StrokeDescription) {
-        service.dispatchGesture(GestureDescription.Builder().addStroke(stroke).build(), null, null)
+        dispatching = true
+        val dispatched = service.dispatchGesture(
+            GestureDescription.Builder().addStroke(stroke).build(),
+            resultCallback,
+            null,
+        )
+        if (!dispatched) dispatching = false
     }
 
     companion object {
         private const val SEGMENT_DURATION_MS = 16L
-        private const val FLUSH_EVERY_N_SAMPLES = 1
     }
 }
