@@ -102,7 +102,7 @@ class SettingsRepository(private val context: Context) {
         val DEFAULT_SCROLL_TRIGGER = ScrollTrigger.TRIGGER
         val DEFAULT_GYRO_MODE = GyroMode.FALLBACK
         val DEFAULT_ACTIVE_POINTER_SOURCE = ActivePointerSource.TOUCHPAD
-        const val DEFAULT_MOTION_SMOOTHING_ENABLED = true
+        const val DEFAULT_MOTION_SMOOTHING_ENABLED = false
 
         // TRIGGER defaults to NONE here — it's the default scroll-trigger modifier (see
         // DEFAULT_SCROLL_TRIGGER), so holding it to scroll shouldn't also fire Recents.
