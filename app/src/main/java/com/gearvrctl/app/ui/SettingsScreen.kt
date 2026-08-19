@@ -25,6 +25,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import com.gearvrctl.app.ble.ControllerRepository
 import com.gearvrctl.app.config.ActivePointerSource
 import com.gearvrctl.app.config.AppSettings
 import com.gearvrctl.app.config.ButtonAction
@@ -32,15 +33,22 @@ import com.gearvrctl.app.config.GearVrButton
 import com.gearvrctl.app.config.GyroMode
 import com.gearvrctl.app.config.ScrollTrigger
 import com.gearvrctl.app.config.SettingsRepository
+import com.gearvrctl.app.input.MagnetometerCalibrator
+import com.gearvrctl.app.protocol.GearVrPacketParser
+import com.gearvrctl.app.protocol.Vector3
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 private val ACCELERATION_RANGE = 0f..0.3f
 private val SENSITIVITY_RANGE = 1f..15f
 private val GYRO_SENSITIVITY_RANGE = 1f..40f
 private val GYRO_DEADZONE_RANGE = 0f..5f
+private val FOV_RANGE = 30f..150f
+private const val MAG_CALIBRATION_COUNTDOWN_SECONDS = 3
+private const val MAG_CALIBRATION_RECORD_SECONDS = 10
 
 @Composable
-fun SettingsScreen(settingsRepository: SettingsRepository) {
+fun SettingsScreen(settingsRepository: SettingsRepository, controllerRepository: ControllerRepository) {
     val scope = rememberCoroutineScope()
     val settings by settingsRepository.settings.collectAsState(
         initial = AppSettings(
@@ -53,6 +61,8 @@ fun SettingsScreen(settingsRepository: SettingsRepository) {
             gyroMode = SettingsRepository.DEFAULT_GYRO_MODE,
             activePointerSource = SettingsRepository.DEFAULT_ACTIVE_POINTER_SOURCE,
             motionSmoothingEnabled = SettingsRepository.DEFAULT_MOTION_SMOOTHING_ENABLED,
+            magHardIronBias = Vector3(0.0, 0.0, 0.0),
+            orientationFovDegrees = SettingsRepository.DEFAULT_ORIENTATION_FOV_DEGREES,
         ),
     )
 
@@ -118,6 +128,21 @@ fun SettingsScreen(settingsRepository: SettingsRepository) {
             onValueChange = { scope.launch { settingsRepository.setGyroDeadzone(it) } },
         )
 
+        Text("Orientation (Absolute Aim)", style = MaterialTheme.typography.titleLarge)
+        Text("Select \"Active source\" = ABSOLUTE_ORIENTATION above (with Mode = EXPLICIT) to use it.")
+
+        Text("Field of view: %.0f°".format(settings.orientationFovDegrees))
+        Slider(
+            value = settings.orientationFovDegrees,
+            valueRange = FOV_RANGE,
+            onValueChange = { scope.launch { settingsRepository.setOrientationFovDegrees(it) } },
+        )
+
+        MagnetometerCalibrationButton(
+            controllerRepository = controllerRepository,
+            onCalibrated = { bias -> scope.launch { settingsRepository.setMagHardIronBias(bias) } },
+        )
+
         Text("Scrolling", style = MaterialTheme.typography.titleLarge)
         EnumDropdownRow(
             label = "Scroll trigger button",
@@ -134,6 +159,65 @@ fun SettingsScreen(settingsRepository: SettingsRepository) {
                 options = ButtonAction.entries,
                 onSelect = { action -> scope.launch { settingsRepository.setButtonAction(button, action) } },
             )
+        }
+    }
+}
+
+private sealed interface MagCalibrationState {
+    data object Idle : MagCalibrationState
+    data class Countdown(val secondsLeft: Int) : MagCalibrationState
+    data class Recording(val secondsLeft: Int) : MagCalibrationState
+    data object Done : MagCalibrationState
+}
+
+@Composable
+private fun MagnetometerCalibrationButton(controllerRepository: ControllerRepository, onCalibrated: (Vector3) -> Unit) {
+    val scope = rememberCoroutineScope()
+    var state by remember { mutableStateOf<MagCalibrationState>(MagCalibrationState.Idle) }
+
+    Column {
+        when (val s = state) {
+            is MagCalibrationState.Idle -> {
+                Button(onClick = {
+                    scope.launch {
+                        for (secondsLeft in MAG_CALIBRATION_COUNTDOWN_SECONDS downTo 1) {
+                            state = MagCalibrationState.Countdown(secondsLeft)
+                            delay(1000)
+                        }
+
+                        val calibrator = MagnetometerCalibrator()
+                        calibrator.start()
+                        val collectJob = launch {
+                            controllerRepository.rawPackets.collect { bytes ->
+                                if (bytes.size == GearVrPacketParser.PACKET_SIZE) {
+                                    calibrator.sample(GearVrPacketParser.parse(bytes).magnetometerUt)
+                                }
+                            }
+                        }
+                        for (secondsLeft in MAG_CALIBRATION_RECORD_SECONDS downTo 1) {
+                            state = MagCalibrationState.Recording(secondsLeft)
+                            delay(1000)
+                        }
+                        collectJob.cancel()
+
+                        onCalibrated(calibrator.finish())
+                        state = MagCalibrationState.Done
+                    }
+                }) {
+                    Text("Calibrate Magnetometer")
+                }
+            }
+            is MagCalibrationState.Countdown -> {
+                Text("Get ready: slowly rotate the controller through all orientations (figure-8 works well)")
+                Text("Starting in ${s.secondsLeft}...", style = MaterialTheme.typography.titleMedium)
+            }
+            is MagCalibrationState.Recording -> {
+                Text("Rotating now! ${s.secondsLeft}s left", style = MaterialTheme.typography.titleMedium)
+            }
+            is MagCalibrationState.Done -> {
+                Text("Calibrated.")
+                Button(onClick = { state = MagCalibrationState.Idle }) { Text("Recalibrate") }
+            }
         }
     }
 }

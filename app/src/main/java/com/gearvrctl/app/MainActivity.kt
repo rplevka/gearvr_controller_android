@@ -7,6 +7,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -65,19 +66,26 @@ class MainActivity : ComponentActivity() {
                             Button(onClick = { screen = Screen.WIZARD }) { Text("Wizard") }
                             Button(onClick = { screen = Screen.SETTINGS }) { Text("Settings") }
                         }
-                        when (screen) {
-                            Screen.WIZARD -> CaptureWizardScreen(repository = repository, activityContext = this@MainActivity)
-                            Screen.SETTINGS -> SettingsScreen(settingsRepository = settingsRepository)
-                            Screen.LOGGER -> PacketLoggerScreen(
-                                onConnectClick = {
-                                    if (BlePermissions.hasAll(this@MainActivity)) {
-                                        repository.connect()
-                                    } else {
-                                        permissionLauncher.launch(BlePermissions.required())
-                                    }
-                                },
-                            )
+                        Box(modifier = Modifier.weight(1f)) {
+                            when (screen) {
+                                Screen.WIZARD -> CaptureWizardScreen(repository = repository, activityContext = this@MainActivity)
+                                Screen.SETTINGS -> SettingsScreen(settingsRepository = settingsRepository, controllerRepository = repository)
+                                Screen.LOGGER -> PacketLoggerScreen(
+                                    onConnectClick = {
+                                        if (BlePermissions.hasAll(this@MainActivity)) {
+                                            repository.connect()
+                                        } else {
+                                            permissionLauncher.launch(BlePermissions.required())
+                                        }
+                                    },
+                                )
+                            }
                         }
+                        Text(
+                            text = "Build #${BuildConfig.BUILD_NUMBER}",
+                            style = MaterialTheme.typography.labelSmall,
+                            modifier = Modifier.padding(4.dp),
+                        )
                     }
                 }
             }

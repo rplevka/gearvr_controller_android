@@ -4,6 +4,13 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+// Auto-incrementing build number, bumped once per Gradle configuration (i.e. once per
+// `./gradlew assembleDebug` invocation) — shown in the app's footer so it's obvious on-device
+// whether a reinstall actually picked up the latest build, instead of guessing from logcat.
+val buildNumberFile = file("build_number.txt")
+val buildNumber = ((if (buildNumberFile.exists()) buildNumberFile.readText().trim().toIntOrNull() else null) ?: 0) + 1
+buildNumberFile.writeText(buildNumber.toString())
+
 android {
     namespace = "com.gearvrctl.app"
     compileSdk = 35
@@ -14,6 +21,8 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "0.1.0-phase1"
+
+        buildConfigField("int", "BUILD_NUMBER", "$buildNumber")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -36,6 +45,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 }
 

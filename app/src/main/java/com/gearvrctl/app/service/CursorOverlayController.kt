@@ -33,11 +33,19 @@ class CursorOverlayController(private val context: Context) {
         width = WindowManager.LayoutParams.MATCH_PARENT
         height = WindowManager.LayoutParams.MATCH_PARENT
         type = WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
+        // FLAG_LAYOUT_NO_LIMITS is required, not just FLAG_LAYOUT_IN_SCREEN — confirmed via real
+        // `dumpsys window` output that without it this window's frame started at y=104 (the
+        // status bar height), not y=0, while dispatchGesture uses true absolute screen
+        // coordinates. That mismatch made taps land ~104px above the visible cursor.
         flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
             WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
-            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+            WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
         format = PixelFormat.TRANSLUCENT
         gravity = Gravity.TOP or Gravity.START
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+        }
     }
 
     fun show() {

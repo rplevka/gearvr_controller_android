@@ -6,6 +6,7 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.gearvrctl.app.protocol.Vector3
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 
@@ -21,6 +22,8 @@ data class AppSettings(
     val gyroMode: GyroMode,
     val activePointerSource: ActivePointerSource,
     val motionSmoothingEnabled: Boolean,
+    val magHardIronBias: Vector3,
+    val orientationFovDegrees: Float,
 )
 
 /** Live-persisted app settings via Jetpack DataStore — replaces the Phase 4/5 hardcoded values. */
@@ -34,6 +37,10 @@ class SettingsRepository(private val context: Context) {
     private val gyroModeKey = stringPreferencesKey("gyro_mode")
     private val activePointerSourceKey = stringPreferencesKey("active_pointer_source")
     private val motionSmoothingEnabledKey = booleanPreferencesKey("motion_smoothing_enabled")
+    private val magBiasXKey = floatPreferencesKey("mag_hard_iron_bias_x")
+    private val magBiasYKey = floatPreferencesKey("mag_hard_iron_bias_y")
+    private val magBiasZKey = floatPreferencesKey("mag_hard_iron_bias_z")
+    private val orientationFovKey = floatPreferencesKey("orientation_fov_degrees")
     private fun buttonKey(button: GearVrButton) = stringPreferencesKey("button_${button.name}")
 
     val settings: Flow<AppSettings> = context.dataStore.data.map { prefs ->
@@ -55,6 +62,12 @@ class SettingsRepository(private val context: Context) {
                 ?.let { runCatching { ActivePointerSource.valueOf(it) }.getOrNull() }
                 ?: DEFAULT_ACTIVE_POINTER_SOURCE,
             motionSmoothingEnabled = prefs[motionSmoothingEnabledKey] ?: DEFAULT_MOTION_SMOOTHING_ENABLED,
+            magHardIronBias = Vector3(
+                (prefs[magBiasXKey] ?: 0f).toDouble(),
+                (prefs[magBiasYKey] ?: 0f).toDouble(),
+                (prefs[magBiasZKey] ?: 0f).toDouble(),
+            ),
+            orientationFovDegrees = prefs[orientationFovKey] ?: DEFAULT_ORIENTATION_FOV_DEGREES,
         )
     }
 
@@ -94,6 +107,18 @@ class SettingsRepository(private val context: Context) {
         context.dataStore.edit { it[motionSmoothingEnabledKey] = enabled }
     }
 
+    suspend fun setMagHardIronBias(bias: Vector3) {
+        context.dataStore.edit {
+            it[magBiasXKey] = bias.x.toFloat()
+            it[magBiasYKey] = bias.y.toFloat()
+            it[magBiasZKey] = bias.z.toFloat()
+        }
+    }
+
+    suspend fun setOrientationFovDegrees(value: Float) {
+        context.dataStore.edit { it[orientationFovKey] = value }
+    }
+
     companion object {
         const val DEFAULT_SENSITIVITY = 6.0f
         const val DEFAULT_ACCELERATION = 0.0f
@@ -103,6 +128,7 @@ class SettingsRepository(private val context: Context) {
         val DEFAULT_GYRO_MODE = GyroMode.FALLBACK
         val DEFAULT_ACTIVE_POINTER_SOURCE = ActivePointerSource.TOUCHPAD
         const val DEFAULT_MOTION_SMOOTHING_ENABLED = false
+        const val DEFAULT_ORIENTATION_FOV_DEGREES = 90f
 
         // TRIGGER defaults to NONE here — it's the default scroll-trigger modifier (see
         // DEFAULT_SCROLL_TRIGGER), so holding it to scroll shouldn't also fire Recents.

@@ -22,4 +22,9 @@ enum class GyroMode {
     EXPLICIT,
 }
 
-enum class ActivePointerSource { TOUCHPAD, GYRO }
+/**
+ * ABSOLUTE_ORIENTATION is a "laser pointer" mode — a Madgwick-fused (gyro+accel+mag) absolute
+ * orientation mapped straight to screen position — only meaningful in [GyroMode.EXPLICIT]:
+ * mixing an absolute aim with the FALLBACK touchpad-blend model doesn't make UX sense.
+ */
+enum class ActivePointerSource { TOUCHPAD, GYRO, ABSOLUTE_ORIENTATION }

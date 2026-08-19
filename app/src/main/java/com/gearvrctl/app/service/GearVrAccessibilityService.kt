@@ -10,12 +10,14 @@ import com.gearvrctl.app.config.GyroMode
 import com.gearvrctl.app.config.ScrollTrigger
 import com.gearvrctl.app.config.SettingsRepository
 import com.gearvrctl.app.config.toGearVrButtonOrNull
+import com.gearvrctl.app.input.AbsoluteOrientationSource
 import com.gearvrctl.app.input.DeltaSmoother
 import com.gearvrctl.app.input.GyroPointerMotionSource
 import com.gearvrctl.app.input.PointerModeManager
 import com.gearvrctl.app.input.TouchpadPointerMotionSource
 import com.gearvrctl.app.protocol.ButtonState
 import com.gearvrctl.app.protocol.GearVrPacketParser
+import com.gearvrctl.app.protocol.Vector3
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -47,6 +49,7 @@ class GearVrAccessibilityService : AccessibilityService() {
     private val overlay by lazy { CursorOverlayController(this) }
     private val touchpadSource = TouchpadPointerMotionSource()
     private val gyroSource = GyroPointerMotionSource()
+    private val absoluteOrientationSource = AbsoluteOrientationSource()
     private val scrollController by lazy { ScrollGestureController(this, screenWidth, screenHeight) }
     private val buttonActionMapper by lazy {
         ButtonActionMapper(this, onTapRequested = { GestureDispatcher.tap(this, cursorX, cursorY) })
@@ -65,6 +68,8 @@ class GearVrAccessibilityService : AccessibilityService() {
         gyroMode = SettingsRepository.DEFAULT_GYRO_MODE,
         activePointerSource = SettingsRepository.DEFAULT_ACTIVE_POINTER_SOURCE,
         motionSmoothingEnabled = SettingsRepository.DEFAULT_MOTION_SMOOTHING_ENABLED,
+        magHardIronBias = Vector3(0.0, 0.0, 0.0),
+        orientationFovDegrees = SettingsRepository.DEFAULT_ORIENTATION_FOV_DEGREES,
     )
 
     private var cursorX = 0f
@@ -99,6 +104,8 @@ class GearVrAccessibilityService : AccessibilityService() {
                 touchpadSource.acceleration = settings.touchpadAcceleration
                 gyroSource.sensitivity = settings.gyroSensitivity
                 gyroSource.deadzoneDegPerSec = settings.gyroDeadzone
+                absoluteOrientationSource.magHardIronBias = settings.magHardIronBias
+                absoluteOrientationSource.fovDegrees = settings.orientationFovDegrees
                 buttonActionMapper.mapping = settings.buttonMapping
             }
         }
@@ -127,6 +134,7 @@ class GearVrAccessibilityService : AccessibilityService() {
         // switch (see PointerModeManager).
         val touchpadDelta = touchpadSource.onSample(sample)
         val gyroDelta = gyroSource.onSample(sample)
+        absoluteOrientationSource.onSample(sample)
 
         val scrollTriggerHeld = isHeld(sample.buttons, currentSettings.scrollTrigger)
 
@@ -151,6 +159,9 @@ class GearVrAccessibilityService : AccessibilityService() {
                 touching = sample.touching,
                 touchpadDelta = touchpadDelta,
                 gyroDelta = gyroDelta,
+                absoluteTarget = absoluteOrientationSource.currentTarget(screenWidth, screenHeight),
+                cursorX = cursorX,
+                cursorY = cursorY,
                 gyroMode = currentSettings.gyroMode,
                 activeSource = currentSettings.activePointerSource,
             )
