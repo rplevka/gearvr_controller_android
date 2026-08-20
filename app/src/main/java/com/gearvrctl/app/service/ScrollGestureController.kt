@@ -22,9 +22,14 @@ import android.graphics.Path
  */
 class ScrollGestureController(
     private val service: AccessibilityService,
-    private val screenWidth: Int,
-    private val screenHeight: Int,
+    private var screenWidth: Int,
+    private var screenHeight: Int,
 ) {
+
+    fun updateScreenSize(width: Int, height: Int) {
+        screenWidth = width
+        screenHeight = height
+    }
 
     private var active = false
     private var currentStroke: GestureDescription.StrokeDescription? = null

@@ -1,6 +1,7 @@
 package com.gearvrctl.app.service
 
 import android.accessibilityservice.AccessibilityService
+import android.content.res.Configuration
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import com.gearvrctl.app.GearVrApplication
@@ -204,6 +205,26 @@ class GearVrAccessibilityService : AccessibilityService() {
         ScrollTrigger.BACK -> buttons.back
         ScrollTrigger.VOLUME_UP -> buttons.volumeUp
         ScrollTrigger.VOLUME_DOWN -> buttons.volumeDown
+    }
+
+    // Screen size was only ever read once in onServiceConnected — rotating (e.g. a fullscreen app
+    // switching to landscape) left screenWidth/Height frozen at the old orientation's dimensions,
+    // clamping the cursor (and scroll drags) to a shrunken region of the real screen. Confirmed on
+    // real hardware: landscape cursor couldn't pass the midpoint, matching the stale portrait
+    // width being used as the landscape clamp bound.
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        val (width, height) = overlay.screenSize()
+        if (width == screenWidth && height == screenHeight) return
+
+        if (screenWidth > 0 && screenHeight > 0) {
+            cursorX = cursorX / screenWidth * width
+            cursorY = cursorY / screenHeight * height
+        }
+        screenWidth = width
+        screenHeight = height
+        scrollController.updateScreenSize(width, height)
+        overlay.moveTo(cursorX, cursorY)
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) = Unit
